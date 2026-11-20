@@ -156,3 +156,30 @@ def test_milestone_5_greedy_is_deterministic_and_adapter_changes_output():
     assert generate_text(model, tok, "abc", 10, temperature=0) != g1
     set_adapter_enabled(model, False)
     assert generate_text(model, tok, "abc", 10, temperature=0) == g1   # off = base model again
+
+
+# Milestone 6: side-by-side comparison
+def test_milestone_6_columns_are_aligned_and_wrapped():
+    from app.compare import render_side_by_side
+    out = render_side_by_side("LEFT", ["a long long long sentence that must wrap around"], "RIGHT", ["short"], width=43)
+    lines = out.splitlines()
+    assert lines[0].startswith("LEFT") and lines[0].endswith("RIGHT")
+    assert len({min(i for i in (line.find("|"), line.find("+")) if i >= 0) for line in lines}) == 1  # divider never moves
+    assert all(len(line) <= 43 for line in lines) and any("short" in line for line in lines)
+
+
+def test_milestone_6_samples_pair_up_with_the_same_seeds():
+    from app.compare import build_comparison
+    left, right = build_comparison(lambda p, s: f"ngram {p} {s}", lambda p, s: f"llm {p} {s}", "hi", 3, seed=10)
+    assert left == ["ngram hi 10", "ngram hi 11", "ngram hi 12"]
+    assert right == ["llm hi 10", "llm hi 11", "llm hi 12"]
+    with pytest.raises(ValueError):
+        build_comparison(lambda p, s: "", lambda p, s: "", "x", 0)
+
+
+def test_milestone_6_compare_command_prints_both_models(monkeypatch, capsys):
+    import app.compare
+    from app.cli import main
+    monkeypatch.setattr(app.compare, "run_comparison", lambda *a, **k: "N-gram | LoRA")
+    main(["compare", "--style", "cricket", "--prompt", "The bowler"])
+    assert "N-gram | LoRA" in capsys.readouterr().out

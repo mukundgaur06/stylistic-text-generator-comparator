@@ -24,8 +24,20 @@ def main(argv: list[str] | None = None) -> None:
     lo.add_argument("--temperature", type=float, default=0.8)
     lo.add_argument("--seed", type=int, default=None)
     lo.add_argument("--base", action="store_true", help="switch the adapter off (plain distilgpt2)")
+    cp = sub.add_parser("compare", help="n-gram vs LoRA-adapted LLM, side by side")
+    cp.add_argument("--style", default="cricket")
+    cp.add_argument("--prompt", default="")
+    cp.add_argument("--samples", type=int, default=3, help="how many continuations per model")
+    cp.add_argument("--max-tokens", type=int, default=40)
+    cp.add_argument("--temperature", type=float, default=0.8)
+    cp.add_argument("--order", type=int, default=3, help="n-gram order")
+    cp.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
-    if args.command == "lora":
+    if args.command == "compare":
+        from app.compare import run_comparison
+        print(run_comparison(args.style, args.prompt, args.samples, args.seed, args.max_tokens,
+                             args.temperature, args.order))
+    elif args.command == "lora":
         from app.lora import generate_text, load_styled_model, set_adapter_enabled
         model, tok = load_styled_model(args.style)
         set_adapter_enabled(model, not args.base)
