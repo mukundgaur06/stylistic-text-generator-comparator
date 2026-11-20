@@ -8,6 +8,7 @@ training then only learns the low-rank difference.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -94,3 +95,92 @@ def parameter_counts(model: nn.Module) -> tuple[int, int]:
     """(trainable, total) parameter counts."""
     total = sum(p.numel() for p in model.parameters())
     return sum(p.numel() for p in model.parameters() if p.requires_grad), total
+
+
+# --- Milestone 4: Fine-tune the LoRA adapter on the sports commentary corpus.
+ADAPTER_DIR = Path(__file__).resolve().parent.parent / "adapters"
+
+
+def _batch(tokenizer, sentences: list[str], max_len: int = 64):
+    """Tokenise sentences + EOS; pad positions are masked out of the loss with -100."""
+    enc = [tokenizer(s, truncation=True, max_length=max_len - 1)["input_ids"] + [tokenizer.eos_token_id]
+           for s in sentences]
+    width = max(map(len, enc))
+    ids = torch.full((len(enc), width), tokenizer.pad_token_id)
+    mask = torch.zeros((len(enc), width), dtype=torch.long)
+    for i, seq in enumerate(enc):
+        ids[i, :len(seq)], mask[i, :len(seq)] = torch.tensor(seq), 1
+    labels = ids.masked_fill(mask == 0, -100)
+    return ids, mask, labels
+
+
+@torch.no_grad()
+def lm_perplexity(model, tokenizer, sentences: list[str]) -> float:
+    """Per-token perplexity (GPT-2 tokens, so not comparable to the word-level n-gram number)."""
+    model.eval()
+    ids, mask, labels = _batch(tokenizer, sentences)
+    logits = model(input_ids=ids, attention_mask=mask).logits[:, :-1]
+    loss = nn.functional.cross_entropy(logits.reshape(-1, logits.size(-1)), labels[:, 1:].reshape(-1),
+                                       ignore_index=-100)
+    return math.exp(loss.item())
+
+
+def train_adapter(model, tokenizer, train: list[str], val: list[str] | None = None, epochs: int = 10,
+                  lr: float = 2e-3, batch_size: int = 8, seed: int = 0) -> list[dict]:
+    """Train only the LoRA parameters; returns one history row per epoch."""
+    if not lora_layers(model):
+        raise ValueError("no LoRA layers found: call inject_lora first")
+    params = [p for p in model.parameters() if p.requires_grad]
+    gen = torch.Generator().manual_seed(seed)
+    opt = torch.optim.AdamW(params, lr=lr, weight_decay=0.0)
+    history, best = [], (float("inf"), None)
+    for epoch in range(1, epochs + 1):
+        model.train()
+        order = torch.randperm(len(train), generator=gen).tolist()
+        losses = []
+        for i in range(0, len(order), batch_size):
+            ids, mask, labels = _batch(tokenizer, [train[j] for j in order[i:i + batch_size]])
+            loss = model(input_ids=ids, attention_mask=mask, labels=labels).loss
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            losses.append(loss.item())
+        row = {"epoch": epoch, "train_loss": sum(losses) / len(losses)}
+        if val:
+            row["val_ppl"] = lm_perplexity(model, tokenizer, val)
+            if row["val_ppl"] < best[0]:   # tiny corpus: remember the best epoch, it overfits fast
+                best = (row["val_ppl"], {k: v.clone() for k, v in model.state_dict().items() if "lora_" in k})
+        history.append(row)
+    if best[1]:
+        model.load_state_dict(best[1], strict=False)
+    return history
+
+
+def save_adapter(model, style: str, directory=ADAPTER_DIR):
+    """Save just the adapter tensors (a couple of MB), not the base model."""
+    directory.mkdir(parents=True, exist_ok=True)
+    state = {k: v for k, v in model.state_dict().items() if "lora_" in k}
+    path = directory / f"{style}.pt"
+    torch.save(state, path)
+    return path
+
+
+def load_adapter(model, style: str, directory=ADAPTER_DIR) -> None:
+    state = torch.load(directory / f"{style}.pt", map_location="cpu")
+    missing = model.load_state_dict(state, strict=False).unexpected_keys
+    if missing:
+        raise ValueError(f"adapter does not match this model: {missing[:3]}")
+
+
+def finetune_style(style: str, epochs: int = 10, r: int = 8, model_name: str = DEFAULT_MODEL):
+    """End to end: load base, inject, train on the style's training split, save the adapter."""
+    from app.core import load_sentences, split_corpus
+    model, tok = load_base_model(model_name)
+    train, val = split_corpus(load_sentences(style))
+    base_ppl = lm_perplexity(model, tok, val)
+    inject_lora(model, r=r)
+    history = train_adapter(model, tok, train, val, epochs=epochs)
+    path = save_adapter(model, style)
+    best = min(history, key=lambda row: row["val_ppl"])
+    return {"style": style, "base_val_ppl": base_ppl, "history": history, "adapter": str(path),
+            "best_epoch": best["epoch"], "best_val_ppl": best["val_ppl"]}

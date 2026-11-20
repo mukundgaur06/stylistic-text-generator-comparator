@@ -87,3 +87,40 @@ def test_milestone_3_adapter_can_be_switched_off_and_bad_input_is_rejected():
         inject_lora(tiny_gpt2(), targets=("nope",))
     with pytest.raises(ValueError):
         inject_lora(tiny_gpt2(), r=10_000)
+
+
+# Milestone 4: fine-tuning the adapter (tiny model + fake tokenizer, no download)
+class _FakeTokenizer:
+    eos_token_id = pad_token_id = 0
+
+    def __call__(self, text, truncation=True, max_length=64):
+        return {"input_ids": [1 + (ord(c) % 90) for c in text][:max_length]}
+
+
+def test_milestone_4_training_updates_only_the_adapter_and_lowers_loss(tmp_path):
+    import torch
+    from app.lora import (inject_lora, load_adapter, lm_perplexity, save_adapter,
+                          tiny_gpt2, train_adapter)
+    model, tok = inject_lora(tiny_gpt2(), r=4), _FakeTokenizer()
+    base_before = {n: p.clone() for n, p in model.named_parameters() if "lora_" not in n}
+    data = ["what a shot", "he is out", "a lovely drive", "caught behind"] * 2
+    ppl0 = lm_perplexity(model, tok, data)
+    hist = train_adapter(model, tok, data, data, epochs=15, lr=1e-2)
+    assert hist[-1]["train_loss"] < hist[0]["train_loss"]
+    assert lm_perplexity(model, tok, data) < ppl0
+    # the weights kept are the best epoch's, not necessarily the last one's
+    assert lm_perplexity(model, tok, data) == pytest.approx(min(h["val_ppl"] for h in hist), rel=1e-4)
+    assert all(torch.equal(p, base_before[n]) for n, p in model.named_parameters() if n in base_before)
+    path = save_adapter(model, "demo", tmp_path)
+    fresh = inject_lora(tiny_gpt2(), r=4)
+    load_adapter(fresh, "demo", tmp_path)
+    ids = torch.randint(0, 100, (1, 6))
+    with torch.no_grad():
+        assert torch.allclose(model.eval()(ids).logits, fresh(ids).logits, atol=1e-5)
+    assert path.stat().st_size < 1_000_000
+
+
+def test_milestone_4_training_requires_an_injected_adapter():
+    from app.lora import tiny_gpt2, train_adapter
+    with pytest.raises(ValueError):
+        train_adapter(tiny_gpt2(), _FakeTokenizer(), ["a b"])

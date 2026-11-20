@@ -13,8 +13,20 @@ def main(argv: list[str] | None = None) -> None:
     ng.add_argument("--max-tokens", type=int, default=40)
     ng.add_argument("--temperature", type=float, default=1.0)
     ng.add_argument("--seed", type=int, default=None)
+    ft = sub.add_parser("finetune", help="fine-tune a LoRA adapter on one style (downloads distilgpt2 once)")
+    ft.add_argument("--style", default="cricket")
+    ft.add_argument("--epochs", type=int, default=10)
+    ft.add_argument("--rank", type=int, default=8)
     args = parser.parse_args(argv)
-    if args.command == "hello":
+    if args.command == "finetune":
+        from app.lora import finetune_style
+        res = finetune_style(args.style, args.epochs, args.rank)
+        print(f"base held-out perplexity: {res['base_val_ppl']:.1f}")
+        for row in res["history"]:
+            print(f"epoch {row['epoch']:>2}  train loss {row['train_loss']:.3f}  held-out ppl {row['val_ppl']:.1f}")
+        print(f"kept best epoch {res['best_epoch']} (held-out ppl {res['best_val_ppl']:.1f})")
+        print(f"saved adapter -> {res['adapter']}")
+    elif args.command == "hello":
         print("Stylistic Text Generator Comparator is ready. Open README.md for your milestones.")
     elif args.command == "ngram":
         from app.core import train_ngram

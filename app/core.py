@@ -32,6 +32,18 @@ def prepare_corpus(text: str) -> list[list[str]]:
     return [tokens for tokens in map(tokenize, sentences) if tokens]
 
 
+def prepare_sentences(text: str) -> list[str]:
+    """Cleaned sentences with original casing (for the LLM); same order as prepare_corpus."""
+    return [s for s in _SENTENCE_END.split(clean_text(text)) if tokenize(s)]
+
+
+def load_sentences(style: str, directory: Path | str = CORPUS_DIR) -> list[str]:
+    path = Path(directory) / f"{style}.txt"
+    if not path.exists():
+        raise FileNotFoundError(f"no corpus for style {style!r} at {path}")
+    return prepare_sentences(path.read_text(encoding="utf-8"))
+
+
 def load_corpus(style: str, directory: Path | str = CORPUS_DIR) -> list[list[str]]:
     """Read corpus/<style>.txt and return one token list per sentence."""
     path = Path(directory) / f"{style}.txt"
