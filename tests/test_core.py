@@ -124,3 +124,35 @@ def test_milestone_4_training_requires_an_injected_adapter():
     from app.lora import tiny_gpt2, train_adapter
     with pytest.raises(ValueError):
         train_adapter(tiny_gpt2(), _FakeTokenizer(), ["a b"])
+
+
+# Milestone 5: generation from the adapted model (tiny model + fake tokenizer)
+class _CharTokenizer(_FakeTokenizer):
+    def __call__(self, text, **kw):
+        return {"input_ids": [1 + (ord(c) % 90) for c in text]}
+
+    def decode(self, ids):
+        return "".join(chr(97 + (i % 26)) for i in ids)
+
+
+def test_milestone_5_generation_is_seeded_and_respects_length_and_prompt():
+    from app.lora import generate_text, inject_lora, tiny_gpt2
+    model, tok = inject_lora(tiny_gpt2(), r=4), _CharTokenizer()
+    a = generate_text(model, tok, "abc", max_new_tokens=12, seed=5)
+    assert a == generate_text(model, tok, "abc", max_new_tokens=12, seed=5)
+    assert a != generate_text(model, tok, "abc", max_new_tokens=12, seed=6)
+    assert a.startswith(tok.decode(tok("abc")["input_ids"])) and len(a) <= 3 + 12
+    assert len(generate_text(model, tok, "", max_new_tokens=8, seed=1)) <= 8
+
+
+def test_milestone_5_greedy_is_deterministic_and_adapter_changes_output():
+    import torch
+    from app.lora import generate_text, inject_lora, lora_layers, set_adapter_enabled, tiny_gpt2
+    model, tok = inject_lora(tiny_gpt2(), r=4), _CharTokenizer()
+    g1 = generate_text(model, tok, "abc", 10, temperature=0)
+    assert g1 == generate_text(model, tok, "abc", 10, temperature=0, seed=99)
+    for layer in lora_layers(model):
+        torch.nn.init.normal_(layer.lora_B, std=0.5)
+    assert generate_text(model, tok, "abc", 10, temperature=0) != g1
+    set_adapter_enabled(model, False)
+    assert generate_text(model, tok, "abc", 10, temperature=0) == g1   # off = base model again

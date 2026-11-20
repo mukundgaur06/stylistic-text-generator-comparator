@@ -184,3 +184,40 @@ def finetune_style(style: str, epochs: int = 10, r: int = 8, model_name: str = D
     best = min(history, key=lambda row: row["val_ppl"])
     return {"style": style, "base_val_ppl": base_ppl, "history": history, "adapter": str(path),
             "best_epoch": best["epoch"], "best_val_ppl": best["val_ppl"]}
+
+
+# --- Milestone 5: Generate text from the LoRA-adapted LLM.
+@torch.no_grad()
+def generate_text(model, tokenizer, prompt: str = "", max_new_tokens: int = 40, temperature: float = 1.0,
+                  top_k: int = 40, seed: int | None = None) -> str:
+    """Sample a continuation of `prompt`; stops at end-of-sequence. Same seed -> same text."""
+    model.eval()
+    gen = torch.Generator().manual_seed(seed if seed is not None else torch.seed())
+    ids = tokenizer(prompt)["input_ids"] if prompt else []
+    prompt_len = len(ids)
+    ids = ids or [tokenizer.eos_token_id]           # an empty prompt starts from the EOS token
+    max_ctx = getattr(model.config, "n_positions", 1024)
+    for _ in range(max_new_tokens):
+        window = torch.tensor([ids[-max_ctx:]])
+        logits = model(input_ids=window).logits[0, -1]
+        if temperature <= 0:                        # greedy
+            nxt = int(logits.argmax())
+        else:
+            logits = logits / temperature
+            if 0 < top_k < logits.numel():
+                kth = torch.topk(logits, top_k).values[-1]
+                logits = logits.masked_fill(logits < kth, float("-inf"))
+            nxt = int(torch.multinomial(torch.softmax(logits, -1), 1, generator=gen))
+        if nxt == tokenizer.eos_token_id:
+            break
+        ids.append(nxt)
+    start = 0 if prompt_len else 1
+    return tokenizer.decode(ids[start:]).strip()
+
+
+def load_styled_model(style: str, model_name: str = DEFAULT_MODEL, r: int = 8):
+    """Base model with the style's saved adapter loaded: returns (model, tokenizer)."""
+    model, tok = load_base_model(model_name)
+    inject_lora(model, r=r)
+    load_adapter(model, style)
+    return model.eval(), tok

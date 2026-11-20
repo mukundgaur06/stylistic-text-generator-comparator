@@ -17,8 +17,20 @@ def main(argv: list[str] | None = None) -> None:
     ft.add_argument("--style", default="cricket")
     ft.add_argument("--epochs", type=int, default=10)
     ft.add_argument("--rank", type=int, default=8)
+    lo = sub.add_parser("lora", help="generate text from the LoRA-adapted model of one style")
+    lo.add_argument("--style", default="cricket")
+    lo.add_argument("--prompt", default="")
+    lo.add_argument("--max-tokens", type=int, default=40)
+    lo.add_argument("--temperature", type=float, default=0.8)
+    lo.add_argument("--seed", type=int, default=None)
+    lo.add_argument("--base", action="store_true", help="switch the adapter off (plain distilgpt2)")
     args = parser.parse_args(argv)
-    if args.command == "finetune":
+    if args.command == "lora":
+        from app.lora import generate_text, load_styled_model, set_adapter_enabled
+        model, tok = load_styled_model(args.style)
+        set_adapter_enabled(model, not args.base)
+        print(generate_text(model, tok, args.prompt, args.max_tokens, args.temperature, seed=args.seed))
+    elif args.command == "finetune":
         from app.lora import finetune_style
         res = finetune_style(args.style, args.epochs, args.rank)
         print(f"base held-out perplexity: {res['base_val_ppl']:.1f}")
